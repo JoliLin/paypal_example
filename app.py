@@ -6,11 +6,13 @@ sys.path.append('{}/'.format(cur.parent))
 
 import json, os
 
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Request
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from paypalcheckoutsdk.core import PayPalHttpClient, SandboxEnvironment
 from paypalcheckoutsdk.orders import OrdersCreateRequest, OrdersCaptureRequest, OrdersGetRequest
+from paypalrestsdk import Api
 from typing import Optional
 
 app = FastAPI()
@@ -27,8 +29,27 @@ client = PayPalHttpClient(environment)
 
 config = {
     "return_url": "http://0.0.0.0:8000/paypal/success",
-    "cancel_url": "http://0.0.0.0.8000/paypal/cancel"
+    "cancel_url": "http://0.0.0.0.8000/paypal/cancel",
+    "callback_url": "http://0.0.0.0.8000/paypal/callback",
+    "base_url": "https://www.sandbox.paypal.com"
 }
+
+config['callback_url'] = 'https://dermagpt.com'
+
+paypal_api = Api({
+    'mode': 'sandbox',
+    'client_id': client_id,
+    'client_secret': client_secret
+})
+
+@app.get("/paypal/check")
+def verify_paypal_account(email):
+    order_id, order_link = create_order()
+
+    if order_id != None and order_link != None:
+        return True
+    else:
+        return False
 
 
 @app.get("/paypal/create")
@@ -139,6 +160,72 @@ async def paypal_cancel(request: Request,
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/paypal/login")
+async def login():
+    return_url = config['callback_url']  # Need to set in Paypal Dashboard
+    base_url = config['base_url'] 
+
+    # Need to set in Paypal Dashboard
+    scopes = [
+    "openid",
+    #"https://uri.paypal.com/services/payments/payment",
+    "email",
+    #"profile"
+    ]
+    scope_string = "%20".join(scopes)
+
+    auth_url = (
+        "https://www.sandbox.paypal.com/connect"
+        f"?client_id={client_id}"
+        "&response_type=code"
+        f"&scope={scope_string}"
+        f"&redirect_uri={return_url}"
+    )
+
+    print(f"Authorization URL: {auth_url}")
+    #return RedirectResponse(auth_url)
+    return {'redirect_url':auth_url}
+
+
+@app.post("/paypal/callback")
+async def callback():
+    BASE_URL = config['base_url']
+
+    # Get Auth Code
+    code = request.args.get('code') 
+
+    if not code:
+        return "Authorization failed", 400
+
+    # Get Token by Auth Code
+    token_url = f"{BASE_URL}/v1/oauth2/token"
+    data = {
+        "grant_type": "authorization_code",
+        "code": code
+    }
+    auth = (client_id, client_secret)
+    response = requests.post(token_url, data=data, auth=auth)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to obtain access token")
+
+    access_token = response.json()['access_token']
+
+    # Get User Info by Token 
+    userinfo_url = f"{BASE_URL}/v1/identity/oauth2/userinfo?schema=paypalv1.1"
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+    userinfo_response = requests.get(userinfo_url, headers=headers)
+
+    if userinfo_response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to obtain user info")
+
+    user_info = userinfo_response.json()
+
+    return user_info
 
 
 @app.post("/paypal/webhook")
