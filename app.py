@@ -189,43 +189,42 @@ async def login():
     return {'redirect_url':auth_url}
 
 
-@app.post("/paypal/callback")
-async def callback():
+@app.get("/callback")
+async def callback(code: str = None):
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization failed")
+
     BASE_URL = config['base_url']
 
-    # Get Auth Code
-    code = request.args.get('code') 
-
-    if not code:
-        return "Authorization failed", 400
-
-    # Get Token by Auth Code
     token_url = f"{BASE_URL}/v1/oauth2/token"
     data = {
         "grant_type": "authorization_code",
         "code": code
     }
-    auth = (client_id, client_secret)
-    response = requests.post(token_url, data=data, auth=auth)
+    auth = (CLIENT_ID, CLIENT_SECRET)
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(token_url, data=data, auth=auth)
 
     if response.status_code != 200:
         raise HTTPException(status_code=400, detail="Failed to obtain access token")
 
     access_token = response.json()['access_token']
 
-    # Get User Info by Token 
     userinfo_url = f"{BASE_URL}/v1/identity/oauth2/userinfo?schema=paypalv1.1"
     headers = {
         "Authorization": f"Bearer {access_token}"
     }
-    userinfo_response = requests.get(userinfo_url, headers=headers)
+
+    async with httpx.AsyncClient() as client:
+        userinfo_response = await client.get(userinfo_url, headers=headers)
 
     if userinfo_response.status_code != 200:
         raise HTTPException(status_code=400, detail="Failed to obtain user info")
 
     user_info = userinfo_response.json()
 
-    return user_info
+    return {"message": "Authentication successful", "user_info": user_info}
 
 
 @app.post("/paypal/webhook")
